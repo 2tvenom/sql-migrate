@@ -14,7 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rubenv/sql-migrate/sqlparse"
+	"github.com/2tvenom/sql-migrate/dialects"
+	"github.com/2tvenom/sql-migrate/sqlparse"
 	"gopkg.in/gorp.v1"
 )
 
@@ -142,11 +143,12 @@ type MigrationRecord struct {
 }
 
 var MigrationDialects = map[string]gorp.Dialect{
-	"sqlite3":  gorp.SqliteDialect{},
-	"postgres": gorp.PostgresDialect{},
-	"mysql":    gorp.MySQLDialect{Engine: "InnoDB", Encoding: "UTF8"},
-	"mssql":    gorp.SqlServerDialect{},
-	"oci8":     gorp.OracleDialect{},
+	"sqlite3":    gorp.SqliteDialect{},
+	"postgres":   gorp.PostgresDialect{},
+	"mysql":      gorp.MySQLDialect{Engine: "InnoDB", Encoding: "UTF8"},
+	"mssql":      gorp.SqlServerDialect{},
+	"oci8":       gorp.OracleDialect{},
+	"clickhouse": dialects.ClickHouseDialect{},
 }
 
 type MigrationSource interface {
@@ -659,14 +661,24 @@ Check https://github.com/go-sql-driver/mysql#parsetime for more info.`)
 	}
 
 	// Create migration database map
-	dbMap := &gorp.DbMap{Db: db, Dialect: d}
-	dbMap.AddTableWithNameAndSchema(MigrationRecord{}, schemaName, tableName).SetKeys(false, "Id")
-	//dbMap.TraceOn("", log.New(os.Stdout, "migrate: ", log.Lmicroseconds))
-
-	err := dbMap.CreateTablesIfNotExists()
-	if err != nil {
-		return nil, err
+	var (
+		err      error
+		dbMap    = &gorp.DbMap{Db: db, Dialect: d}
+		tableMap = dbMap.AddTableWithNameAndSchema(MigrationRecord{}, schemaName, tableName)
+	)
+	if dialect != "clickhouse" {
+		tableMap.SetKeys(false, "Id")
+		if err = dbMap.CreateTablesIfNotExists(); err != nil {
+			return nil, err
+		}
+	} else {
+		if _, err = db.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (id String, applied_at DateTime)
+		ENGINE MergeTree() PARTITION BY toYYYYMM(applied_at) 
+		ORDER BY (applied_at, id) SETTINGS index_granularity=8192;`, tableName)); err != nil {
+			return nil, err
+		}
 	}
+	//dbMap.TraceOn("", log.New(os.Stdout, "migrate: ", log.Lmicroseconds))
 
 	return dbMap, nil
 }
